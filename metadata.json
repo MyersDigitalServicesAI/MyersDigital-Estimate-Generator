@@ -1,0 +1,8 @@
+
+{
+  "name": "ConstructAI - Market Dominance Suite",
+  "description": "A professional construction estimation platform featuring AI vision takeoff, real-time market simulation, and predictive risk analytics.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
