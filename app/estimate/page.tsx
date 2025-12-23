@@ -48,10 +48,10 @@ export default function EstimatePage() {
         },
         pricing: estimate.pricing,
         companyInfo: {
-          name: 'MyersDigital Services AI',
+          name: 'Myers Digital Services AI',
           address: 'Brook Park, Ohio',
-          phone: '(555) 123-4567',
-          email: 'hello@myersdigital.com',
+          phone: '(216) 716-0296',
+          email: 'myersdigitalservicesai@gmail.com',
           license: 'OH-12345'
         },
         estimateNumber: `EST-${Date.now()}`
