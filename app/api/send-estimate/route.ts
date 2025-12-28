@@ -91,4 +91,37 @@ export async function POST(req: NextRequest) {
               <li>✅ Labor breakdown by trade</li>
               <li>✅ Real-time market pricing</li>
               <li>✅ Competitive rate comparison</li>
-              <li>✅ Project timeline
+              <li>✅ Project timeline</li>
+            </ul>
+            
+            <p>If you have any questions about this estimate or would like to discuss your project further, please don't hesitate to reach out.</p>
+            
+            <p>We look forward to working with you!</p>
+          </div>
+          
+          <div class="footer">
+            <p>© ${new Date().getFullYear()} ${companyName}</p>
+            <p>This estimate is valid for 30 days from the generated date.</p>
+          </div>
+        </body>
+        </html>
+      `,
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return NextResponse.json(
+        { error: 'Failed to send email' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, data });
+  } catch (error) {
+    console.error('Send estimate error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
