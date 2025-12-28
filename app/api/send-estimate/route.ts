@@ -1,4 +1,3 @@
-// app/api/send-estimate/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { Resend } from 'resend';
 
