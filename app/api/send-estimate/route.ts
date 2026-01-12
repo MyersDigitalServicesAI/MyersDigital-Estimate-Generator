@@ -1,22 +1,70 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { Resend } from 'resend';
+import { NextRequest, NextResponse } from 'next/server'
+import { createServerSupabaseClient } from '@/lib/supabase-server'
+import { Resend } from 'resend'
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+if (!process.env.RESEND_API_KEY) {
+  throw new Error('RESEND_API_KEY is not configured')
+}
+
+const resend = new Resend(process.env.RESEND_API_KEY)
 
 export async function POST(req: NextRequest) {
   try {
-    const { estimateId, toEmail, toName, pdfUrl } = await req.json();
+    const supabase = createServerSupabaseClient()
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
 
-    if (!estimateId || !toEmail) {
-      return NextResponse.json(
-        { error: 'Missing estimateId or toEmail' },
-        { status: 400 }
-      );
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const fromEmail = process.env.RESEND_FROM_EMAIL || 'estimates@myersdigital.com';
-    const companyName = process.env.COMPANY_NAME || 'MyersDigital Services AI';
+    const body = await req.json()
+    const { estimateId, toEmail, toName, pdfUrl } = body ?? {}
 
+    if (typeof estimateId !== 'string' || typeof toEmail !== 'string') {
+      return NextResponse.json(
+        { error: 'Missing or invalid estimateId/toEmail' },
+        { status: 400 }
+      )
+    }
+
+    // 1. Verify ownership of the estimate
+    const { data: estimate, error: estimateError } = await supabase
+      .from('estimates')
+      .select('id, status')
+      .eq('id', estimateId)
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (estimateError || !estimate) {
+      return NextResponse.json(
+        { error: 'Estimate not found or access denied' },
+        { status: 404 }
+      )
+    }
+
+    const fromEmail =
+      process.env.RESEND_FROM_EMAIL || 'estimates@myersdigital.com'
+    const companyName = process.env.COMPANY_NAME || 'MyersDigital Services AI'
+
+    // 2. Optional: basic idempotency/rate-limit per estimate/email
+    const { data: alreadySent } = await supabase
+      .from('sent_emails')
+      .select('id')
+      .eq('estimate_id', estimateId)
+      .eq('to_email', toEmail)
+      .maybeSingle()
+
+    if (alreadySent) {
+      return NextResponse.json(
+        { error: 'This estimate was already emailed to this address recently.' },
+        { status: 429 }
+      )
+    }
+
+    // 3. Send email via Resend
     const { data, error } = await resend.emails.send({
       from: `${companyName} <${fromEmail}>`,
       to: [toEmail],
@@ -36,91 +84,97 @@ export async function POST(req: NextRequest) {
               padding: 20px;
             }
             .header {
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              background: #2563eb;
               color: white;
-              padding: 30px;
+              padding: 20px;
               text-align: center;
               border-radius: 8px 8px 0 0;
             }
             .content {
               background: #f9fafb;
-              padding: 30px;
+              padding: 20px;
+              border: 1px solid #e5e7eb;
+              border-top: none;
               border-radius: 0 0 8px 8px;
             }
-            .button {
-              display: inline-block;
-              background: #667eea;
+            .btn {
+              background: #2563eb;
               color: white;
-              padding: 12px 30px;
+              padding: 10px 20px;
               text-decoration: none;
-              border-radius: 6px;
-              margin: 20px 0;
+              border-radius: 5px;
+              display: inline-block;
+              margin: 15px 0;
             }
             .footer {
               text-align: center;
-              color: #666;
+              color: #6b7280;
               font-size: 12px;
-              margin-top: 30px;
-              padding-top: 20px;
-              border-top: 1px solid #e5e7eb;
+              margin-top: 24px;
             }
           </style>
         </head>
         <body>
           <div class="header">
-            <h1>${companyName}</h1>
-            <p>Professional Construction Estimates</p>
+            <h2>${companyName}</h2>
           </div>
-          
           <div class="content">
-            <h2>Hello ${toName || 'there'}! 👋</h2>
-            
-            <p>Thank you for requesting an estimate. We've prepared a detailed cost breakdown for your construction project based on current market pricing.</p>
-            
+            <p>Hello ${toName || 'there'},</p>
+            <p>
+              Here is the estimate you requested. We've prepared a detailed breakdown
+              based on the latest market pricing.
+            </p>
+
+            ${
+              pdfUrl
+                ? `<div style="text-align: center;">
+                     <a href="${pdfUrl}" class="btn">View Estimate PDF</a>
+                   </div>`
+                : ''
+            }
+
             <p><strong>Estimate #:</strong> ${estimateId}</p>
-            <p><strong>Generated:</strong> ${new Date().toLocaleDateString()}</p>
-            
-            ${pdfUrl ? `
-              <a href="${pdfUrl}" class="button">View Your Estimate</a>
-            ` : ''}
-            
-            <h3>What's Included:</h3>
-            <ul>
-              <li>✅ Detailed material costs</li>
-              <li>✅ Labor breakdown by trade</li>
-              <li>✅ Real-time market pricing</li>
-              <li>✅ Competitive rate comparison</li>
-              <li>✅ Project timeline</li>
-            </ul>
-            
-            <p>If you have any questions about this estimate or would like to discuss your project further, please don't hesitate to reach out.</p>
-            
-            <p>We look forward to working with you!</p>
+
+            <p>If you have any questions, please reply to this email.</p>
+            <p>Best,<br>${companyName}</p>
           </div>
-          
           <div class="footer">
-            <p>© ${new Date().getFullYear()} ${companyName}</p>
-            <p>This estimate is valid for 30 days from the generated date.</p>
+            <p>This estimate email was sent from ${companyName}.</p>
           </div>
         </body>
         </html>
       `,
-    });
+    })
 
     if (error) {
-      console.error('Resend error:', error);
+      console.error('[send-estimate.resend_error]', error)
       return NextResponse.json(
-        { error: 'Failed to send email' },
+        { error: 'Failed to deliver email' },
         { status: 500 }
-      );
+      )
     }
 
-    return NextResponse.json({ success: true, data });
-  } catch (error) {
-    console.error('Send estimate error:', error);
+    // 4. Mark estimate as sent
+    await supabase
+      .from('estimates')
+      .update({ status: 'sent', updated_at: new Date().toISOString() })
+      .eq('id', estimateId)
+
+    // 5. Record send op for idempotency/analytics
+    await supabase.from('sent_emails').insert({
+      estimate_id: estimateId,
+      to_email: toEmail,
+      sent_at: new Date().toISOString(),
+    })
+
+    return NextResponse.json({ success: true, data })
+  } catch (error: any) {
+    console.error('[send-estimate.api_error]', {
+      error: error?.message || String(error),
+    })
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
-    );
+    )
   }
 }
