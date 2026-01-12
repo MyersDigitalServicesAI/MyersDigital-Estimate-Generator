@@ -1,10 +1,10 @@
-// components/EstimateForm.tsx (MOBILE-OPTIMIZED)
 'use client'
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { supabaseBrowser } from '@/lib/supabaseBrowser'
 
+// Local mock pricing (can be replaced with /api/pricing call later)
 const MOCK_PRICING = {
   hvac: {
     small: { materials: 350, labor: 500, competitors: { min: 850, max: 1500, avg: 1150 } },
@@ -65,7 +65,9 @@ export default function EstimateForm({ userId }: EstimateFormProps) {
   const [success, setSuccess] = useState('')
   const router = useRouter()
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+  const handleInputChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
     const { name, value } = e.target
     setFormData(prev => ({ ...prev, [name]: value }))
     setError('')
@@ -74,8 +76,18 @@ export default function EstimateForm({ userId }: EstimateFormProps) {
   const handleGenerateEstimate = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
     
-    if (!formData.projectType || !formData.county || !formData.state || !formData.clientEmail) {
+    if (
+      !formData.projectType ||
+      !formData.county.trim() ||
+      !formData.state.trim() ||
+      !formData.clientEmail.trim()
+    ) {
       setError('Please fill in all required fields')
+      return
+    }
+
+    if (formData.state.trim().length !== 2) {
+      setError('State must be a 2-letter code (e.g., OH)')
       return
     }
 
@@ -115,6 +127,7 @@ export default function EstimateForm({ userId }: EstimateFormProps) {
         document.getElementById('estimate-preview')?.scrollIntoView({ behavior: 'smooth' })
       }, 100)
     } catch (error) {
+      console.error(error)
       setError('Error generating estimate. Please try again.')
     } finally {
       setLoading(false)
@@ -122,7 +135,12 @@ export default function EstimateForm({ userId }: EstimateFormProps) {
   }
 
   const handleSaveEstimate = async () => {
-    if (!formData.clientEmail) {
+    if (!estimate) {
+      setError('Please generate an estimate before saving')
+      return
+    }
+
+    if (!formData.clientEmail.trim()) {
       setError('Please enter client email')
       return
     }
@@ -131,42 +149,48 @@ export default function EstimateForm({ userId }: EstimateFormProps) {
     setError('')
 
     try {
-      const { data, error: insertError } = await supabase.from('estimates').insert({
-        user_id: userId,
-        estimate_number: estimate.estimateNumber,
-        client_name: formData.projectType.toUpperCase(),
-        client_email: formData.clientEmail,
-        project_type: formData.projectType,
-        county: formData.county,
-        state: formData.state,
-        project_description: formData.projectDesc,
-        project_size: formData.projectSize,
-        subtotal: estimate.subtotal,
-        tax: estimate.tax,
-        total: estimate.total,
-        status: 'draft'
-      }).select().single()
+      const { data, error: insertError } = await supabaseBrowser
+        .from('estimates')
+        .insert({
+          user_id: userId,
+          estimate_number: estimate.estimateNumber,
+          client_name: formData.projectType.toUpperCase(),
+          client_email: formData.clientEmail,
+          project_type: formData.projectType,
+          county: formData.county,
+          state: formData.state,
+          project_description: formData.projectDesc,
+          project_size: formData.projectSize,
+          subtotal: estimate.subtotal,
+          tax: estimate.tax,
+          total: estimate.total,
+          status: 'draft'
+        })
+        .select()
+        .single()
 
       if (insertError) throw insertError
 
       if (data?.id) {
-        // Save line items
-        await supabase.from('estimate_line_items').insert(
-          estimate.lineItems.map((item: any, idx: number) => ({
-            estimate_id: data.id,
-            description: item.desc,
-            quantity: item.qty,
-            unit_price: item.rate,
-            total: item.total,
-            display_order: idx
-          }))
-        )
+        await supabaseBrowser
+          .from('estimate_line_items')
+          .insert(
+            estimate.lineItems.map((item: any, idx: number) => ({
+              estimate_id: data.id,
+              description: item.desc,
+              quantity: item.qty,
+              unit_price: item.rate,
+              total: item.total,
+              display_order: idx
+            }))
+          )
       }
 
       setSuccess('✓ Estimate saved!')
       setTimeout(() => router.push('/app/dashboard'), 1500)
     } catch (error: any) {
-      setError('Error saving estimate: ' + error.message)
+      console.error(error)
+      setError('Error saving estimate: ' + (error?.message || 'Unknown error'))
     } finally {
       setSaving(false)
     }
@@ -296,11 +320,11 @@ export default function EstimateForm({ userId }: EstimateFormProps) {
                 />
               </div>
 
-              {/* GENERATE BUTTON - 48PX MOBILE, 44PX MIN DESKTOP */}
+              {/* GENERATE BUTTON */}
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full bg-blue-600 text-white font-semibold py-4 md:py-3 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 mt-4 text-base md:text-base font-semibold"
+                className="w-full bg-blue-600 text-white font-semibold py-4 md:py-3 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 mt-4 text-base md:text-base"
               >
                 {loading ? (
                   <span className="flex items-center justify-center">
@@ -416,7 +440,9 @@ export default function EstimateForm({ userId }: EstimateFormProps) {
             {estimate.lineItems.map((item: any, idx: number) => (
               <div key={idx} className="flex justify-between py-1">
                 <span>{item.desc}</span>
-                <span className="font-semibold">${item.total.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                <span className="font-semibold">
+                  ${item.total.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
               </div>
             ))}
           </div>
