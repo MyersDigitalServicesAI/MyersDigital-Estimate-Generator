@@ -1,76 +1,115 @@
 // app/api/pricing/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase'; // Import your existing client
-import { PricingInput, PricingResult, calculateMarkup } from '@/lib/pricingAPI';
+import { NextRequest, NextResponse } from 'next/server'
+import { createServerSupabaseClient } from '@/lib/supabase-server'
+import { validatePricingInput } from '@/lib/pricing-validator'
+import { PricingResult, calculateMarkup, PricingInput } from '@/lib/pricingAPI'
+
+function numOrThrow(value: unknown, field: string): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`Invalid numeric field "${field}" from pricing_data`)
+  }
+  return n
+}
 
 export async function POST(req: NextRequest) {
   try {
-    const input: PricingInput = await req.json();
+    // 1. Initialize Server Supabase client & check auth
+    const supabase = createServerSupabaseClient()
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
 
-    // 1. Validate input
-    if (!input.tradeType || !input.projectSize) {
-      return NextResponse.json(
-        { error: 'Missing required fields: tradeType or projectSize' },
-        { status: 400 }
-      );
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // 2. Try to fetch from Supabase (Live Data)
+    // 2. Parse & validate input
+    const rawBody = await req.json()
+    let input: PricingInput
+
+    try {
+      input = validatePricingInput(rawBody)
+    } catch (e: any) {
+      console.warn('[pricing.validation_error]', { message: e?.message })
+      return NextResponse.json({ error: 'Invalid pricing input' }, { status: 400 })
+    }
+
+    // 3. Fetch pricing_data (live DB)
     const { data: dbPrice, error } = await supabase
       .from('pricing_data')
       .select('*')
-      .eq('trade_type', input.tradeType.toLowerCase())
-      .eq('project_size', input.projectSize.toLowerCase())
-      .single();
+      .eq('trade_type', input.tradeType)      // expect normalized to lowercase
+      .eq('project_size', input.projectSize)  // expect normalized to lowercase
+      .maybeSingle()
 
-    // 3. Use DB data if found, otherwise Mock
-    let pricing: PricingResult;
-
-    if (dbPrice && !error) {
-      pricing = transformDbResponse(dbPrice, input);
-      console.log(`✅ Found live pricing for ${input.tradeType} (${input.projectSize})`);
-    } else {
-      console.warn(`⚠️ No live pricing for ${input.tradeType}. Using mock fallback.`);
-      pricing = generateMockPricing(input);
+    if (error) {
+      console.error('[pricing.db_error]', { error })
+      throw new Error('Database query failed')
     }
 
-    return NextResponse.json(pricing);
+    // 4. Transform or fallback
+    let pricing: PricingResult
 
+    if (dbPrice) {
+      console.log('[pricing.live_hit]', {
+        tradeType: input.tradeType,
+        projectSize: input.projectSize,
+      })
+      pricing = transformDbResponse(dbPrice)
+    } else {
+      console.warn('[pricing.fallback]', {
+        tradeType: input.tradeType,
+        projectSize: input.projectSize,
+      })
+      pricing = generateMockPricing(input)
+    }
+
+    return NextResponse.json(pricing)
   } catch (error: any) {
-    console.error('Pricing API error:', error);
+    console.error('[pricing.api_error]', { error: error?.message || String(error) })
     return NextResponse.json(
-      { error: error.message || 'Failed to fetch pricing' },
+      { error: 'Internal pricing engine error' },
       { status: 500 }
-    );
+    )
   }
 }
 
-// Transform Supabase DB row to PricingResult format
-function transformDbResponse(record: any, input: PricingInput): PricingResult {
-  const baseCost = Number(record.material_cost) + Number(record.labor_cost);
-  const markup = calculateMarkup(baseCost);
+function transformDbResponse(record: any): PricingResult {
+  const matCost = numOrThrow(record.material_cost, 'material_cost')
+  const labCost = numOrThrow(record.labor_cost, 'labor_cost')
+  const baseCost = matCost + labCost
+  const markup = calculateMarkup(baseCost)
+
+  const marketAvg =
+    record.market_avg != null ? numOrThrow(record.market_avg, 'market_avg') : baseCost * 1.15
+  const marketMax =
+    record.market_max != null ? numOrThrow(record.market_max, 'market_max') : baseCost * 1.4
+  const marketMin =
+    record.market_min != null ? numOrThrow(record.market_min, 'market_min') : baseCost * 0.9
 
   return {
     baseCost,
-    laborCost: Number(record.labor_cost),
-    materialCost: Number(record.material_cost),
-    equipmentCost: 0, // Add column to DB if needed
+    laborCost: labCost,
+    materialCost: matCost,
+    equipmentCost: 0,
     overhead: markup.overhead,
     profit: markup.profit,
     totalCost: baseCost + markup.overhead + markup.profit,
-    marketAverage: Number(record.market_avg),
-    highPrice: Number(record.market_max),
-    lowPrice: Number(record.market_min),
+    marketAverage: marketAvg,
+    highPrice: marketMax,
+    lowPrice: marketMin,
     competitorCount: 5,
-    source: 'live', // Flag as live data
+    source: 'live',
     breakdown: [
       {
         id: '1',
         description: 'Materials & Supplies',
         quantity: 1,
         unit: 'lot',
-        unitPrice: Number(record.material_cost),
-        total: Number(record.material_cost),
+        unitPrice: matCost,
+        total: matCost,
         category: 'material',
       },
       {
@@ -78,28 +117,36 @@ function transformDbResponse(record: any, input: PricingInput): PricingResult {
         description: 'Labor & Installation',
         quantity: 1,
         unit: 'lot',
-        unitPrice: Number(record.labor_cost),
-        total: Number(record.labor_cost),
+        unitPrice: labCost,
+        total: labCost,
         category: 'labor',
       },
     ],
-  };
+  }
 }
 
-// Fallback Mock Generator (Preserved from your original code)
 function generateMockPricing(input: PricingInput): PricingResult {
-  // Simple multipliers for mock scaling
-  const multipliers: Record<string, number> = { small: 1, medium: 2.5, large: 5, xlarge: 10 };
-  const mult = multipliers[input.projectSize] || 1;
+  const multipliers: Record<string, number> = {
+    small: 1,
+    medium: 2.5,
+    large: 5,
+    xlarge: 10,
+  }
+  const mult = multipliers[input.projectSize] || 1
 
   const baseCosts: Record<string, number> = {
-    hvac: 2500, plumbing: 1800, electrical: 2200, roofing: 3500, drywall: 1500, painting: 1200
-  };
+    hvac: 2500,
+    plumbing: 1800,
+    electrical: 2200,
+    roofing: 3500,
+    drywall: 1500,
+    painting: 1200,
+  }
 
-  const baseVal = (baseCosts[input.tradeType.toLowerCase()] || 2000) * mult;
-  const labor = baseVal * 0.6;
-  const material = baseVal * 0.4;
-  const markup = calculateMarkup(baseVal);
+  const baseVal = (baseCosts[input.tradeType] || 2000) * mult
+  const labor = baseVal * 0.6
+  const material = baseVal * 0.4
+  const markup = calculateMarkup(baseVal)
 
   return {
     baseCost: baseVal,
@@ -114,8 +161,24 @@ function generateMockPricing(input: PricingInput): PricingResult {
     lowPrice: baseVal * 0.9,
     source: 'fallback',
     breakdown: [
-      { id: 'm1', description: 'Standard Materials', quantity: 1, unit: 'ls', unitPrice: material, total: material, category: 'material' },
-      { id: 'l1', description: 'Standard Labor', quantity: 1, unit: 'ls', unitPrice: labor, total: labor, category: 'labor' }
-    ]
-  };
+      {
+        id: 'm1',
+        description: 'Standard Materials',
+        quantity: 1,
+        unit: 'ls',
+        unitPrice: material,
+        total: material,
+        category: 'material',
+      },
+      {
+        id: 'l1',
+        description: 'Standard Labor',
+        quantity: 1,
+        unit: 'ls',
+        unitPrice: labor,
+        total: labor,
+        category: 'labor',
+      },
+    ],
+  }
 }
